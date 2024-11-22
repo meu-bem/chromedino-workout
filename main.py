@@ -1,6 +1,12 @@
 import pygame
 import os
 import random
+import asyncio
+import websockets
+import json
+import threading
+
+# Pygame setup
 pygame.init()
 
 # Global Constants
@@ -29,7 +35,49 @@ CLOUD = pygame.image.load(os.path.join("Assets/Other", "Cloud.png"))
 
 BG = pygame.image.load(os.path.join("Assets/Other", "Track.png"))
 
+USER_MOVEMENT = 'stand'
 
+# WebSocket communication
+async def consume_websocket():
+    uri = "ws://localhost:8765"  # Connect to your WebSocket server
+    async with websockets.connect(uri) as websocket:
+        while True:
+            # Wait for a message from the WebSocket server
+            message = await websocket.recv()
+
+            # Parse the received JSON message
+            data = json.loads(message)
+
+            # Process the data
+            print("Received data:", data)
+
+            # Example: Accessing movement and position
+            current_position = data.get('current_position')
+            movement = data.get('movement')
+            update_game_state(current_position, movement)
+
+def set_user_movement(current_position, movement):
+    if movement and movement.lower() == 'jumping':
+        return 'jump'
+    if current_position and current_position.lower() == 'squatting':
+        return 'squat'
+    return 'stand'
+
+# Update the game state based on WebSocket data
+def update_game_state(current_position, movement):
+    # Use this data to adjust game behavior like moving the dinosaur
+    # print(f"Position: {current_position}, Movement: {movement}")
+    global USER_MOVEMENT
+    USER_MOVEMENT = set_user_movement(current_position, movement)
+
+# Thread to run the WebSocket client in the background
+def websocket_thread():
+    asyncio.run(consume_websocket())
+
+# Start the WebSocket thread
+thread = threading.Thread(target=websocket_thread)
+thread.daemon = True  # Ensure it closes when the program exits
+thread.start()
 
 class Dinosaur:
     X_POS = 80
@@ -65,15 +113,16 @@ class Dinosaur:
         if self.step_index >= 10:
             self.step_index = 0
 
-        if userInput[pygame.K_UP] and not self.dino_jump:
+        print(f'movement: {USER_MOVEMENT}')
+        if USER_MOVEMENT == 'jump' and not self.dino_jump:
             self.dino_duck = False
             self.dino_run = False
             self.dino_jump = True
-        elif userInput[pygame.K_DOWN] and not self.dino_jump:
+        elif USER_MOVEMENT == 'squat' and not self.dino_jump:
             self.dino_duck = True
             self.dino_run = False
             self.dino_jump = False
-        elif not (self.dino_jump or userInput[pygame.K_DOWN]):
+        elif not (self.dino_jump or USER_MOVEMENT == 'squat'):
             self.dino_duck = False
             self.dino_run = True
             self.dino_jump = False
@@ -87,7 +136,7 @@ class Dinosaur:
 
     def run(self):
         self.image = self.run_img[self.step_index // 5]
-        self.dino_rect = self.image.get_rect().inflate(self.INFLATION, self.INFLATION   )
+        self.dino_rect = self.image.get_rect().inflate(self.INFLATION, self.INFLATION)
         self.dino_rect.x = self.X_POS
         self.dino_rect.y = self.Y_POS
         self.step_index += 1
@@ -106,68 +155,54 @@ class Dinosaur:
         if SHOW_SPRITES_CONTOURNS:
             pygame.draw.rect(SCREEN, (255, 255, 0), self.dino_rect, 2)
 
-
 class Cloud:
     def __init__(self):
-        self.x = SCREEN_WIDTH + random.randint(800, 1000)
-        self.y = random.randint(50, 100)
         self.image = CLOUD
+        self.x = SCREEN_WIDTH
+        self.y = random.randint(50, 150)
         self.width = self.image.get_width()
+        self.height = self.image.get_height()
 
     def update(self):
         self.x -= game_speed
         if self.x < -self.width:
-            self.x = SCREEN_WIDTH + random.randint(2500, 3000)
-            self.y = random.randint(50, 100)
+            self.x = SCREEN_WIDTH
+            self.y = random.randint(50, 150)
 
     def draw(self, SCREEN):
         SCREEN.blit(self.image, (self.x, self.y))
 
-
 class Obstacle:
-    def __init__(self, image):
-        self.variation = random.choice(image)
-        self.rect = self.variation.get_rect()
+    def __init__(self, type):
+        self.type = type
+        self.image = self.type[0]  # Pick the first image from the type
+        self.rect = self.image.get_rect()
         self.rect.x = SCREEN_WIDTH
+        self.rect.y = 300  # Position on the ground
 
     def update(self):
         self.rect.x -= game_speed
         if self.rect.x < -self.rect.width:
-            obstacles.pop()
+            obstacles.remove(self)
 
     def draw(self, SCREEN):
-        SCREEN.blit(self.variation, self.rect)
-        if SHOW_SPRITES_CONTOURNS:
-            pygame.draw.rect(SCREEN, (0, 255, 255), self.rect, 2)
+        SCREEN.blit(self.image, (self.rect.x, self.rect.y))
 
-
+# Add Cactus and Bird obstacles
 class SmallCactus(Obstacle):
     def __init__(self):
         super().__init__(SMALL_CACTUS)
-        self.rect.y = 325
-
 
 class LargeCactus(Obstacle):
     def __init__(self):
         super().__init__(LARGE_CACTUS)
-        self.rect.y = 300
-
 
 class Bird(Obstacle):
     def __init__(self):
         super().__init__(BIRD)
         self.rect.y = 250
-        self.index = 0
 
-    def draw(self, SCREEN):
-        if self.index >= 9:
-            self.index = 0
-        SCREEN.blit(BIRD[self.index//5], self.rect)
-        if SHOW_SPRITES_CONTOURNS:
-            pygame.draw.rect(SCREEN, (0, 255, 100), self.rect, 2)
-        self.index += 1
-
-
+# Main game loop remains the same...
 def main():
     global game_speed, x_pos_bg, y_pos_bg, points, obstacles
     run = True
@@ -211,13 +246,15 @@ def main():
 
         SCREEN.fill((255, 255, 255))
         userInput = pygame.key.get_pressed()
-
-        player.draw(SCREEN)
         player.update(userInput)
+        player.draw(SCREEN)
 
-        if len(obstacles) == 0:
-            obstacle = random.choice(obstacle_options)
-            obstacles.append(obstacle())
+        # Cloud and obstacles
+        cloud.update()
+        cloud.draw(SCREEN)
+        if len(obstacles) == 0 and random.choices([0, 0, 0, 0, 1]):
+            obstacle = random.choice(obstacle_options)()
+            obstacles.append(obstacle)
 
         for obstacle in obstacles:
             obstacle.draw(SCREEN)
@@ -225,45 +262,17 @@ def main():
             if player.dino_rect.colliderect(obstacle.rect):
                 pygame.time.delay(2000)
                 death_count += 1
-                menu(death_count)
+                pygame.quit()
 
-        background()
-
-        cloud.draw(SCREEN)
-        cloud.update()
-
+        # Update score
         score()
 
+        # Game update
+        background()
+        pygame.display.update()
         clock.tick(30)
-        pygame.display.update()
 
+    pygame.quit()
 
-def menu(death_count):
-    global points
-    run = True
-    while run:
-        SCREEN.fill((255, 255, 255))
-        font = pygame.font.Font('freesansbold.ttf', 30)
-
-        if death_count == 0:
-            text = font.render("Press any Key to Start", True, (0, 0, 0))
-        elif death_count > 0:
-            text = font.render("Press any Key to Restart", True, (0, 0, 0))
-            score = font.render("Your Score: " + str(points), True, (0, 0, 0))
-            scoreRect = score.get_rect()
-            scoreRect.center = (SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 50)
-            SCREEN.blit(score, scoreRect)
-        textRect = text.get_rect()
-        textRect.center = (SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
-        SCREEN.blit(text, textRect)
-        SCREEN.blit(RUNNING[0], (SCREEN_WIDTH // 2 - 20, SCREEN_HEIGHT // 2 - 140))
-        pygame.display.update()
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                run = False
-            if event.type == pygame.KEYDOWN:
-                main()
-
-
-menu(death_count=0)
+if __name__ == "__main__":
+    main()
